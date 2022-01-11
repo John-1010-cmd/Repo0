@@ -866,9 +866,92 @@ H-->G
 
 关键字volatile可以说是Java虚拟机提供的最轻量级的同步机制。
 
-当一个变量定义为volatile之后，将具备两种特性，第一是保证此变量对所有线程的可见性，即当一条线程修改了这个变量的值，新值对于其他线程来说是可以立即得知的。而普通变量不能做到这一点，普通变量的值在线程间传递均需要通过主内存来完成，例如，线程A修改一个普通变量的值，然后向主内存进行回写，另外一条线程B在线程A回写完成了之后再从主内存进行读取操作，新变量值才会对线程B可见。
+当一个变量定义为volatile之后，将具备两种特性。
+
+第一是保证此变量对所有线程的可见性，即当一条线程修改了这个变量的值，新值对于其他线程来说是可以立即得知的。而普通变量不能做到这一点，普通变量的值在线程间传递均需要通过主内存来完成，例如，线程A修改一个普通变量的值，然后向主内存进行回写，另外一条线程B在线程A回写完成了之后再从主内存进行读取操作，新变量值才会对线程B可见。
 
 volatile变量在各个线程的工作内存中不存在一致性问题，但是Java里面的运算并非原子操作，导致volatile变量的运算在并发下一样是不安全的。
+
+```java
+/**
+ * volatile变量自增运算测试
+ */
+public class VolatileTest {
+    public static volatile int race = 0;
+    public static void increase(){
+        Thread t = Thread.currentThread();
+        race++;
+        System.out.println("race in "+t.getName()+" is "+race);
+    }
+    private static final int THREADS_COUNT = 20;
+    public static void main(String[] args){
+        final Thread[] threads = new Thread[THREADS_COUNT];
+        for(int i = 0;i<THREADS_COUNT;i++){
+            threads[i] = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    for(int i = 0;i<10000;i++) {
+                        increase();
+                    }
+                }
+            });
+            threads[i].setName("Thread "+i);
+            threads[i].start();
+        }
+        //等待所有累加线程都结束 idea活跃线程数 +1
+        while(Thread.activeCount()>(1+1)){
+            Thread.yield();
+        }
+        System.out.println("final race is "+race);
+    }
+}
+```
+
+> public static void increase();
+> 	Code:
+>        0: getstatic     #2                  // Field race:I
+>        3: iconst_1
+>        4: iadd
+>        5: putstatic     #2                  // Field race:I
+>        8: return
+
+race预期应为200000，而实际输出数值小于200000，从字节码层面可分析出，当getstatic指令把race的值取到操作栈顶时，volatile关键字保证了race的值在此时是正确的，但是再执行iconst_1、iadd这些指令的时候，其他线程可能已经把race的值加大了，而在操作栈顶的值就变成了过期的数据，所以putstatic指令执行后就可能吧较小的race值同步回主内存之中。
+
+由于volatile变量只能保证可见性，在不符合以下两条规则的运算场景中，仍要通过加锁（使用synchronized或java.util.concurrent中的原子类）来保证原子性。
+
+- 运算结果并不依赖变量的当前值，或者能够确保只有单一的线程修改变量的值。
+- 变量不需要与其他的状态变量共同参与不变约束。
+
+使用volatile变量的第二个语义是禁止指令重排序优化，普通的变量仅仅会保证在该方法的执行过程中所有依赖赋值结果的地方都能获取到正确的结果，而不能保证变量赋值操作的顺序与程序代码中的执行顺序一致。因为在一个线程的方法执行过程中无法感知到这点，也就是Java内存模型中描述的“线程内表现为串行的语义”（Within-Thread As-If-Serial Semantics）。
+
+在某些情况下，volatile的同步机制的性能确实要优于锁（使用synchronize关键字或java.util.concurrent包里面的锁），但由于虚拟机对锁实行的许多消除和优化，很难量化地认为volatile就会比synchronized快多少。如果让volatile与自己比较，则volatile变量读操作的性能消耗与普通变量几乎没有什么差别，但写操作可能会慢一些，因为它需要在本地代码中插入许多内存屏障指令来保证处理器不发生乱序执行。不过即便如此，大多数场景下volatile的总开销仍要比锁低。选择volatile与锁的唯一依据仅仅是volatile的语义能否满足使用场景的需求。
+
+### 12.3.4 对于long和double型变量的特殊规则
+
+Java内存模型要求lock、unlock、read、load、assign、use、store、write这8个操作都具有原子性，但是对于64位的数据类型（long和double），在模型中特别定义了一条相对宽松的规定：允许虚拟机将没有被volatile修饰的64位数据的读写操作划分为两次32位的操作来进行，即允许虚拟机实现选择可以不保证64位数据类型的load、store、read和write这4个操作的原则性，这点就是long和double的非原子性协定（Nonatomic Treatment of double and long Variables）。
+
+如果有多个线程共享一个并未声明为volatile的long或double类型的变量，并且同时对它们进行读取和修改操作，那么某些线程可能会读到一个既非原值，也不是其他线程修改值的代表了“半个变量”的值，不过非常罕见，因为Java内存模型允许虚拟机选择把这些操作实现为具有原子性的操作，所以一般不需要把用到的long和double变量专门声明为volatile。
+
+### 12.3.5 原子性、可见性、有序性
+
+### 12.3.6 先行发生原则
+
+先行发生（happens-before）是Java内存模型中定义的两项操作之间的偏序关系，如果说操作A先行发生于操作B，就是说在发生操作B之前，操作A产生的影响能被操作B观察到，“影响”包括修改了内存中共享变量的值、发送了消息、调用了方法等。
+
+以下是Java内存模型下一些“天然”的先行发生关系，无需任何同步器协助就已经存在，可在编码中直接使用。
+
+- 程序次序规则（Program Order Rule）：在一个线程内，按照程序代码顺序（准确地说应该是控制流顺序），书写在前面的操作先行发生于书写在后面的操作
+- 管程锁定规则（Monitor Lock Rule）：一个unlock操作先行发生于后面（时间上的先后顺序）对同一个锁的lock操作。
+- volatile变量规则（Volatile Variable Rule）：对一个volatile变量的写操作先行发生于后面（时间上的先后顺序）对这个变量的读操作
+- 线程启动规则（Thread Start Rule）：Thread对象的start()方法先行发生于此线程的每一个动作
+- 线程终止规则（Thread Termination Rule）：线程中的所有操作都先行发生于对此线程的终止检测
+- 线程中断规则（Thread Interruption Rule）：对线程interrupt()方法的调用先行发生于被中断线程的代码检测到中断事件的发生
+- 对象终结规则（Finalizer Rule）：一个对象的初始化完成（构造函数执行结束）先行发生于它的finalize()方法的开始
+- 传递性（Transitivity）：如果操作A先行发生于B，B先行发生于C，那么A先行发生于C
+
+一个操作“时间上的先发生”不代表这个操作会是“先行发生”，一个操作“先行发生”也不一定是“时间上的先发生”，时间先后顺序与先行发生原则之间基本没有太大的关系，所以衡量并发安全问题的时候不要受到时间顺序的干扰，一切必须以先行发生原则为准。
+
+## 12.4 Java与线程
 
 
 
