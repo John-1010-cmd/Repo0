@@ -804,11 +804,207 @@ public class testHandlePromotion {
 
 这5个场景中的行为称为对一个类进行主动引用，除此之外，所有引用类的方式都不会触发初始化，称为被动引用。
 
+对于静态字段，只有直接定义这个字段的类才会被初始化，因此通过其子类来引用父类中定义的静态字段，只会触发父类的初始化而不会触发子类的初始化。至于是否要触发子类的加载和验证，取决于虚拟机的具体实现，对于Sun HotSpot虚拟机来说，可通过-XX:+TraceClassLoading参数观察到此操作会导致子类的加载。
 
+```java
+public class NoInitialization {
+    public static void main(String[] args){
+//        若SubClass没定义value值 输出
+//        SuperClass init!
+//        123
+//        若SubClass有定义value值 输出
+//        SuperClass init！
+//        SubClass init！
+//        233
+//        System.out.println(SubClass.value);
 
+//        无输出
+//        说明没有触发类SuperClass的初始化阶段
+//        但这段代码触发了另一个SuperClass类的初始化阶段，它是由虚拟机自动生成，创建动作由字节码指令 newarray 触发
+//        SuperClass[] superClasses = new SuperClass[10];
 
+//        没有输出 ConstClass init！
+//        在编译阶段通过常量传播优化，已经将常量值HELLO储存到NoInitialization类的常量池中
+//        也就是说，NoInitialization的Class文件中并没有ConstClass类的符号引用入口
+//        System.out.println(ConstClass.HELLO);
+    }
+}
+```
 
+## 7.3 类加载的过程
 
+类加载的全过程：加载、验证、准备、解析和初始化。
+
+### 7.3.1 加载
+
+“加载”是“类加载”（Class Loading）过程的一个阶段，在加载阶段，虚拟机
+
+1. 通过一个类的全限定名来获取定义此类的二进制字节流
+2. 将这个字节流所代表的静态存储结构转化为方法区的运行时数据结构
+3. 在内存中生成一个代表这个类的java.lang.Class对象，作为方法区这个类的各种数据的访问入口
+
+虚拟机规范的这三点要求其实并不算具体，因此虚拟机实现与具体应用的灵活度都是相当大的。
+
+一个非数组类的加载阶段，既可以使用系统提供的引导类加载器来完成，也可以由用户自定义的类加载器去完成，可以通过定义自己的类加载器去控制字节流的获取方式（即重写一个类加载器的loadClass()方法）。
+
+数组类本身不通过类加载器创建，它是由Java虚拟机直接创建的，但数组类的的元素类型最终是要靠类加载器去创建。
+
+### 7.3.2 验证
+
+验证是连接阶段的第一步，目的是为了确保Class文件的字节流中包含的信息符合当前虚拟机的要求，并且不会危害虚拟机自身的安全。
+
+验证阶段是否严谨，直接决定了Java虚拟机是否能承受恶意代码的攻击，从执行性能的角度上讲，验证阶段的工作量在虚拟机的类加载子系统中又占了相当大的一部分。从整体上看，验证阶段大致上会完成4个阶段的检验动作：文件格式验证、元数据验证、字节码验证、符号引用验证。
+
+1. 文件格式验证
+
+   验证字节流是否符合Class文件格式的规范，保证输入的字节流能正确地解析并存储于方法区之内，格式上符合描述一个Java类型信息的要求。这阶段的验证是基于二进制字节流进行的，只有通过了这个阶段的验证后，字节流才会进入内存的方法区中进行存储，所以后面三个验证阶段全部是基于方法区的存储结构进行的，不会再直接操作字节流。
+
+2. 元数据验证
+
+   对字节码描述的信息进行语义分析，以保证其描述的信息符合Java语言规范的要求
+
+3. 字节码验证
+
+   第三阶段是整个验证过程中最复杂的一个阶段，主要目的是通过数据流和控制流分析，确定程序语义是合法的、符合逻辑的。这个阶段对类的方法体进行校验分析，保证被校验类的方法在运行时不会做出危害虚拟机安全的事件。
+
+4. 符号引用验证
+
+   最后一个阶段的校验发生在虚拟机将符号引用转化为直接引用的时候，这个转化动作将在连接的第三阶段--解析阶段中发生，对类自身以外（常量池中的各种符号引用）的信息进行匹配性校验，目的是确保解析动作能正常执行。
+
+对于虚拟机的类加载机制来说，验证阶段是一个非常重要、但不是一定必要（因为对程序运行期没有影响）的阶段。如果所运行的全部代码都已经被反复使用和验证过，那么在实施阶段可以考虑使用-Xverify:none参数来关闭大部分的类验证措施，以缩短虚拟机类加载的时间。
+
+### 7.3.3 准备
+
+准备阶段是正式为类变量分配内存并设置类变量初始值的阶段，这些变量所使用的内存都将在方法区中进行分配。这时候进行内存分配的仅包括类变量（被static修饰的变量），而不包括实例变量，实例变量将会在对象实例化时随着对象一起分配在Java堆中。其次，这里所说的初始值“通常情况”下是数据类型的零值
+
+| 数据类型  |   零值   |
+| :-------: | :------: |
+|    int    |    0     |
+|   long    |    0L    |
+|   short   | (short)0 |
+|   char    | '\u0000' |
+|   byte    | (byte)0  |
+|  boolean  |  false   |
+|   float   |   0.0f   |
+|  double   |   0.0d   |
+| reference |   null   |
+
+如果类字段的字段属性表中存在ConstantValue属性，那在准备阶段变量value就会被初始化为ConstantValue属性所指定的值。
+
+### 7.3.4 解析
+
+解析阶段是虚拟机将常量池内的符号引用替换为直接引用的过程。
+
+- 符号引用（Symbolic References）：符号引用以一组符号来描述所引用的目标，符号可以是任何形式的字面量，只要使用时能无歧义地定位到目标即可。符号引用与虚拟机实现的内存布局无关，引用的目标并不一定已经加载到内存中。各种虚拟机实现的内存布局可以各不相同，但是它们能接受的符号引用必须都是一致的，因为符号引用的字面量形式明确定义在Java虚拟机规范的Class文件格式中。
+- 直接引用（Direct References）：直接引用可以是直接指向目标的指针、相对偏移量或是一个能间接定位到目标的句柄。直接引用是和虚拟机实现的内存布局相关的，同一个符号引用在不同虚拟机实例上翻译出来的直接引用一般不会相同。如果有了直接引用，那引用的目标必定已经在内存中存在。
+
+虚拟机规范之中并未规定解析阶段发生的具体时间，只要求在执行anewarray、checkcast、getfield、getstatic、instanceof、invokedynamic、invokeinterface、invokespecial、invokestatic、invokevirtual、ldc、ldc_w、multianewarray、new、putfield和putstatic这16个用于操作符号引用的字节码指令之前，先对它们所使用的符号引用进行解析。所以虚拟机实现可以根据需要来判断到底是在类被加载器加载时就对常量池中的符号引用进行解析，还是等到一个符号引用将要被使用前才去解析它。
+
+。。。。。。
+
+### 7.3.5 初始化
+
+## 7.4 类加载器
+
+类加载阶段中的“通过一个类的全限定名来获取描述此类的二进制字节流”这个动作在Java虚拟机外部实现，让应用程序自己决定如何去获取所需要的类。实现这个动作的代码模块称为“类加载器”。
+
+### 7.4.1 类与类加载器
+
+类加载器虽然只用于实现类的加载动作，但它在Java程序中起到的作用却远远不限于类加载阶段。对于任意一个类，都需要由加载它的类加载器和这个类本身一同确立其在Java虚拟机中的唯一性，每一个类加载器，都拥有一个独立的类名称空间。更通俗一点就是，比较两个类是否“相等”，只有在这两个类是由同一个类加载器加载的前提下才有意义，否则即使这两个类来源于同一个Class文件，被同一个虚拟机加载，只要加载它们的类加载器不同，那这两个类就必定不相等。
+
+这里的“相等”，包括代表类的Class对象的equals()方法、isAssignableFrom()方法、isInstance()方法的返回结果，也包括使用instanceof关键字做对象所属关系判定等情况。
+
+### 7.4.2 双亲委派模型
+
+从Java虚拟机的角度来讲，只存在两种不同的类加载器：一种是启动类加载器（Bootstrap ClassLoader)，这个类加载器使用C++实现，是虚拟机自身的一部分；另一部分就是所有其他的类加载器，都由Java实现，独立于虚拟机外部，并且都继承自抽象类java.lang.ClassLoader。
+
+- 启动类加载器（Bootstrap ClassLoader）：负责将存放在<JAVA_HOME>\lib目录中，或者被-Xbootclasspath参数所指定的路径中，并且是虚拟机识别的类库加载到虚拟机内存中。无法被Java程序直接引用。
+- 扩展类加载器（Extension Classloader）：负责加载<JAVA_HOME>\lib\ext目录中，或者被java.ext.dirs系统变量所指定的路径中的所有类库，开发者可以直接使用扩展类加载器。
+- 应用程序类加载器（Application ClassLoader）：也称系统类加载器，负责加载用户类路径上所指定的类库，开发者可以直接使用这个类加载器，如果应用程序中没有自定义过自己的类加载器，一般就是程序中默认的类加载器。
+
+```mermaid
+graph BT
+A(自定义类加载器)-->C(应用程序类加载器)
+B(自定义类加载器)-->C
+C-->D(扩展类加载器)
+D-->E(启动类加载器)
+```
+
+双亲委派模型（Parents Delegation Model）要求除了顶层的启动类加载器外，其余的类加载器都应有自己的父类加载器，这里的加载器之间的父子关系一般不会以继承（Inheritance）的关系来实现，而是都使用组合（Composition）的关系来复用父加载器的代码。
+
+==双亲委派模型==的工作过程是：如果一个类加载器收到了类加载的请求，它首先不会自己去尝试加载这个类，而是把这个请求委派给父类加载器去完成，每一个层次的类加载器都是如此，因此所有的加载请求最终都应该传送到顶层的启动类加载器中，只有当父加载器反馈自己无法完成这个加载请求（它的搜索范围中没有找到所需的类）时，子加载器才会尝试自己去加载。
+
+使用双亲委派模型来组织类加载器之间的关系，一个显而易见的好处就是Java类随着它的类加载器一起具备了一种带优先级的层次关系，比如编写一个与rt.jar类库中已有类重名的Java类，将会发现可以正常编译，但永远无法被加载运行。
+
+实现双亲委派的代码都集中在java.lang.ClassLoader的loadClass()方法之中：先检查是否已经被加载过，若没有加载则调用父加载器的loadClass()方法，若父加载器为空则默认使用启动类加载器作为父加载器，如果父类加载失败，抛出ClassNotFoundException异常后，再调用自己的findClass()方法进行加载。
+
+```java
+    protected Class<?> loadClass(String name, boolean resolve)
+        throws ClassNotFoundException
+    {
+        synchronized (getClassLoadingLock(name)) {
+            // First, check if the class has already been loaded
+            Class c = findLoadedClass(name);
+            if (c == null) {
+                long t0 = System.nanoTime();
+                try {
+                    if (parent != null) {
+                        c = parent.loadClass(name, false);
+                    } else {
+                        c = findBootstrapClassOrNull(name);
+                    }
+                } catch (ClassNotFoundException e) {
+                    // ClassNotFoundException thrown if class not found
+                    // from the non-null parent class loader
+                }
+
+                if (c == null) {
+                    // If still not found, then invoke findClass in order
+                    // to find the class.
+                    long t1 = System.nanoTime();
+                    c = findClass(name);
+
+                    // this is the defining class loader; record the stats
+                    sun.misc.PerfCounter.getParentDelegationTime().addTime(t1 - t0);
+                    sun.misc.PerfCounter.getFindClassTime().addElapsedTimeFrom(t1);
+                    sun.misc.PerfCounter.getFindClasses().increment();
+                }
+            }
+            if (resolve) {
+                resolveClass(c);
+            }
+            return c;
+        }
+    }
+```
+
+### 7.4.3 破坏双亲委派模型
+
+- 第一次“被破坏”--JDK1.2之前
+
+  由于双亲委派模型在JDK1.2之后才被引入，而类加载器和抽象类java.lang.ClassLoader则在JDK1.0时代就已经存在，面对已经存在的用户自定义类加载器的实现代码，JDK1.2之后的java.lang.ClassLoader添加了一个新的protected方法findClass()，在此之前，用户去继承java.lang.ClassLoader的唯一目的就是为了重写loadClass()方法，因为虚拟机在进行类加载的时候会调用加载器的私有方法loadClassInternal()，而这个方法的唯一逻辑就是去调用自己的loadClass()。
+
+- 第二次“被破坏”--自身缺陷
+
+  双亲委派很好地解决了各个类加载器的基础类的统一问题（越基础的类由越上层的加载器进行加载）但如果基础类又要调用会用户的代码，就会有问题。
+
+  所以引入了线程上下文类加载器（Thread Context ClassLoader），这个类加载器可以通过java.lang.Thread类的setContextClassLoader()方法进行设置，如果创建线程时未设置，它将会从父线程中继承一个，如果在应用程序的全局范围内都没有设置过的话，那这个类加载器默认就是应用程序类加载器。
+
+  有了线程上下文类加载器，JNDI服务可以去加载所需要的SPI代码，也就是父类加载器请求子类加载器去完成类加载的动作，实际上就是打通了双亲委派模型的层次结构来逆向使用类加载器，实际上已经违背了双亲委派模型的一般性原则。
+
+- 第三次“被破坏”--用户对程序动态性的追求
+
+  “动态性”指的是：代码热替换（HotSwap）、模块热部署（Hot Development）等。
+
+  OSGi实现模块化热部署的关键是它自定义的类加载器机制的实现。在OSGi环境下，类加载器不再是双亲委派模型中的树状结构，而是进一步发展为更加复杂的网状结构，当收到类加载请求时，OSGi将按照下面的顺序进行类搜索：
+
+  1. 将以java.*开头的类委派给父类加载器加载
+  2. 否则，将委派列表名单内的类委派给父类加载器加载
+  3. 否则，将Import列表中的类委派给Export这个类的Bundle的类加载器加载
+  4. 否则，查找当前Bundle的ClassPath，使用自己的类加载器加载
+  5. 否则，查找类是否在自己的Fragment Bundle中，如果在，则委派给Fragment Bundle的类加载器加载
+  6. 否则，查找Dynamic Import列表的Bundle，委派给对应Bundle的类加载器加载
+  7. 否则，类查找失败
 
 # 第8章 虚拟机字节码执行引擎
 
@@ -1086,3 +1282,4 @@ Java内存模型要求lock、unlock、read、load、assign、use、store、write
 假设当前虚拟机启用了偏向锁（-XX:+UseBiasedLocking），那么，当锁对象第一次被线程获取的时候，虚拟机将会把对象头中的标志位设为“01”，即偏向模式，同时使用CAS操作把获取到这个锁的线程的ID记录在对象的Mark Word中，如果CAS操作成功，持有偏向锁的线程以后每次进入这个锁的相关同步块时，虚拟机都可以不再进行任何同步操作。
 
 当有另外一个线程去尝试获取这个锁时，偏向模式就宣告结束。根据锁对象目前是否处于被锁定的状态，撤销偏向后恢复到未锁定（标志位“01”）或轻量级锁（标志位“00”）的状态，后续的同步操作就如轻量级锁那样执行。
+
